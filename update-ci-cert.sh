@@ -46,6 +46,14 @@ if ! grep -qi "SIGN_CERT_SHA1: ${HASH}" .github/workflows/release.yml; then
     echo "release.yml's SIGN_CERT_SHA1 isn't ${HASH} — update it to match first." >&2
     exit 1
 fi
+# The dry run below runs release.yml from main on GitHub, not this checkout.
+# Checked before the secrets change, so a hash that's committed but not pushed
+# doesn't leave CI holding a certificate its workflow won't accept.
+if ! git fetch -q origin main 2>/dev/null \
+    || ! git show origin/main:.github/workflows/release.yml | grep -qi "SIGN_CERT_SHA1: ${HASH}"; then
+    echo "main on GitHub doesn't name certificate ${HASH} yet — push the release.yml change first." >&2
+    exit 1
+fi
 WORK="$(mktemp -d)"
 SCRATCH_KC="${WORK}/scratch.keychain-db"
 CHECK_KC="${WORK}/check.keychain-db"

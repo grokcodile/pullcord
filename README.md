@@ -157,25 +157,30 @@ git tag v0.3 && git push origin v0.3
 
 That runs on a `macos-26` runner and, in order: imports the Developer ID certificate, stamps the version from the tag into `Info.plist`, builds, checks the binary really is arm64, notarizes and staples the app, builds and notarizes a disk image, publishes a GitHub Release with generated notes, and bumps `version` and `sha256` in the Homebrew cask so `brew upgrade --cask pullcord` picks it up.
 
-**The tag is the version.** `Info.plist` is stamped during the build rather than committed, so the tag and the shipped app can never disagree. Running the workflow manually (`workflow_dispatch`) builds and notarizes without publishing, and leaves the disk image as an artifact — useful for checking a build before tagging.
+**The tag is the version.** `Info.plist` is stamped from the tag during the build, so the tag and the shipped app can never disagree. (Release commits bump it too — `Pullcord 1.30` — which is what a local `notarize.sh` build reads.) Running the workflow manually (`workflow_dispatch`) from `main` builds and notarizes without publishing, and leaves the disk image as an artifact — useful for checking a build before tagging. Run it from a branch, not a tag: from a tag ref it publishes.
 
-It needs six repository secrets. Each step is skipped rather than failed when its secrets are absent, so a partly-configured repo still builds:
+It needs six repository secrets. On a manual run, a step whose secrets are absent is skipped, so a partly-configured repo still builds; a tag refuses to publish without the signing and notarization ones:
 
 | Secret | What it is |
 | --- | --- |
-| `MACOS_CERT_P12_BASE64` | Developer ID Application certificate, exported as `.p12`, base64-encoded — must be the certificate whose hash is `SIGN_CERT_SHA1` in the workflow, or the import step fails |
-| `MACOS_CERT_PASSWORD` | the password set when exporting that `.p12` |
+| `MACOS_CERT_P12_BASE64` | the Developer ID identity whose hash is `SIGN_CERT_SHA1` in the workflow, plus its intermediate, as a base64 `.p12` — set by `update-ci-cert.sh` |
+| `MACOS_CERT_PASSWORD` | the random password that `.p12` is wrapped in — also set by `update-ci-cert.sh`; nobody needs to know it |
 | `AC_API_KEY_ID` | App Store Connect API key ID |
 | `AC_API_ISSUER_ID` | App Store Connect issuer ID |
 | `AC_API_KEY_BASE64` | the `.p8` API key file, base64-encoded |
 | `TAP_PUSH_TOKEN` | a token with `contents:write` on `grokcodile/homebrew-tap` |
 
-After renewing the certificate, `./update-ci-cert.sh Certificates.p12` (a `.p12` exported from Keychain Access) sets both certificate secrets. It sends only the identity named by `SIGN_IDENTITY`, plus its intermediate, re-wrapped under a random password, then runs the workflow once from `main` as a dry run that publishes nothing.
+**Renewing the Developer ID certificate.** Three values name it, and change together: `DEFAULT_SIGN_IDENTITY` in `build.sh` and `SIGN_CERT_SHA1` in `release.yml` become the new hash, and `RETIRED_SIGN_IDENTITY` in `build.sh` becomes the one being replaced. Commit and push those first, then export the new certificate from Keychain Access and run:
+
+```sh
+./update-ci-cert.sh Certificates.p12
+```
+
+It asks for the `.p12`'s password and sends only the identity named by that hash, plus its intermediate, re-wrapped under a random password — so an export that also carries the old certificate is harmless. Then it runs the workflow once from `main` as a dry run that publishes nothing. It refuses to start if `main` on GitHub still names a different certificate, since that dry run would fail. Delete the exported `.p12` afterwards.
 
 Notarization uses an App Store Connect API key rather than an Apple ID and app-specific password: it's the non-interactive path, it doesn't put an account password in CI, and it's revocable on its own without touching the Apple ID. It's the same key as the local `grokcodile` profile above — one credential to rotate, not two.
 
 ```sh
-base64 -i Certificates.p12 | gh secret set MACOS_CERT_P12_BASE64
 base64 -i AuthKey_XXXXXXXX.p8 | gh secret set AC_API_KEY_BASE64
 ```
 
