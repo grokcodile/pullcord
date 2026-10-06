@@ -953,13 +953,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // brings the app back (and the footer just offers the update again).
         let brewBin = (brew as NSString).deletingLastPathComponent
         let bundle = Bundle.main.bundlePath
+        let pid = ProcessInfo.processInfo.processIdentifier
+        // We're quit by PID, before the upgrade, and both halves matter. By name
+        // (`pkill -x Pullcord`) matched nothing: pkill and pgrep skip their own
+        // ancestors, and this helper is our child. That left the quit to brew,
+        // and Homebrew (since 53ca353, Aug 2026) won't quit an app that brew is
+        // running inside — which, walking up from this helper, is us. So brew
+        // swapped the bundle under a live copy, `open` just re-focused it, and
+        // the strip sat on "Updating…". Once we've exited, this helper belongs
+        // to launchd, brew isn't inside Pullcord any more, and any other copy
+        // gets quit the normal way.
         let script = """
         #!/bin/sh
         export PATH="\(brewBin):/usr/bin:/bin:/usr/sbin:/sbin"
         "\(brew)" update >/dev/null 2>&1
         "\(brew)" fetch --cask pullcord >/dev/null 2>&1
-        pkill -x Pullcord 2>/dev/null
-        for i in $(seq 1 20); do pgrep -x Pullcord >/dev/null || break; sleep 0.5; done
+        kill \(pid) 2>/dev/null
+        for i in $(seq 1 20); do kill -0 \(pid) 2>/dev/null || break; sleep 0.5; done
+        kill -0 \(pid) 2>/dev/null && kill -9 \(pid) 2>/dev/null
         "\(brew)" upgrade --cask pullcord >/dev/null 2>&1
         # Homebrew tags cask installs with com.apple.quarantine, and a quarantined
         # app needs an interactive first launch to be approved. Pullcord's first
