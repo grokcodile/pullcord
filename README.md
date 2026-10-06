@@ -177,7 +177,7 @@ base64 -i Certificates.p12 | gh secret set MACOS_CERT_P12_BASE64
 base64 -i AuthKey_XXXXXXXX.p8 | gh secret set AC_API_KEY_BASE64
 ```
 
-The app icon ships pre-generated (`icon/AppIcon.icns`); regenerate it from `icon/AppIcon.appiconset` with `icon/make-icns.sh`, which needs nothing installed — `iconutil` ships with macOS. The set holds a separate export per size and the script copies them rather than downscaling one master, because a 3D render loses its silhouette at 16 and 32 long before it runs out of pixels.
+The app icon ships pre-generated (`icon/AppIcon.icns`); regenerate it from `icon/AppIcon.appiconset` with `icon/make-icns.sh`, which needs `pngquant` (`brew install pngquant`). The set holds a separate export per size and the script copies them rather than downscaling one master, because a 3D render loses its silhouette at 16 and 32 long before it runs out of pixels. It packs each pixel size once — macOS picks an icon by pixel size, so a 256@2x slot would only repeat the 512 — and requantises copies with `pngquant` at 70–95, as Key54 does. That took the icon from 644 KB to 256 KB, with no visible difference.
 
 ## Requirements
 
