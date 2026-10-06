@@ -59,11 +59,14 @@ trap cleanup EXIT
 cat > "${WORK}/export.swift" <<'SWIFT'
 // export-identity <sha1> <out.p12> [<in.p12>]
 //
-// Writes the identity whose certificate has that SHA-1, plus the intermediates
-// its chain needs, to <out.p12> under P12_PASSPHRASE. It searches the user's
-// keychains, or only EXPORT_KEYCHAIN when that is set. With <in.p12> (password
-// IN_PASSPHRASE), that file is first imported into EXPORT_KEYCHAIN, a scratch
-// keychain, so the identity can be picked out of whatever else the file holds.
+// Writes the identity whose certificate has that SHA-1 to <out.p12> under
+// P12_PASSPHRASE.
+//
+// Without <in.p12> it searches the user's keychains and writes the identity
+// alone. With <in.p12> (password IN_PASSPHRASE), that file is imported into
+// EXPORT_KEYCHAIN, a scratch keychain, the identity is picked out of whatever
+// else the file holds, and the intermediates its chain needs are added, so the
+// runner can validate it without having them installed.
 import CryptoKit
 import Foundation
 import Security
@@ -137,18 +140,47 @@ guard let match else {
     fail("No identity with certificate SHA-1 \(want). Found: \(available.isEmpty ? "none" : available.joined(separator: ", ")).")
 }
 
-// The intermediates, so the runner can validate the chain without having them
-// installed. Built from whatever this Mac trusts; the root is left out, since
-// the runner must already trust it for any of this to work.
+func certificates(in keychain: SecKeychain) -> [SecCertificate] {
+    var found: CFTypeRef?
+    let query: [String: Any] = [
+        kSecClass as String: kSecClassCertificate,
+        kSecMatchLimit as String: kSecMatchLimitAll,
+        kSecReturnRef as String: true,
+        kSecMatchSearchList as String: [keychain],
+    ]
+    guard SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess else { return [] }
+    return found as? [SecCertificate] ?? []
+}
+
 var items: [CFTypeRef] = [match.identity]
-var trust: SecTrust?
-if SecTrustCreateWithCertificates(match.cert, SecPolicyCreateBasicX509(), &trust) == errSecSuccess, let trust {
-    _ = SecTrustEvaluateWithError(trust, nil)
-    let chain = (SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []
-    for cert in chain.dropFirst() {
-        let subject = SecCertificateCopyNormalizedSubjectSequence(cert) as Data?
-        let issuer = SecCertificateCopyNormalizedIssuerSequence(cert) as Data?
-        if subject != issuer { items.append(cert) }
+if args.count == 4, let keychain {
+    // The chain is built from what this Mac trusts plus anything the file
+    // brought with it. The root is left out: the runner must already trust it.
+    var trust: SecTrust?
+    let candidates = [match.cert] + certificates(in: keychain)
+    if SecTrustCreateWithCertificates(candidates as CFArray, SecPolicyCreateBasicX509(), &trust) == errSecSuccess,
+       let trust {
+        _ = SecTrustEvaluateWithError(trust, nil)
+        for cert in ((SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []).dropFirst() {
+            let subject = SecCertificateCopyNormalizedSubjectSequence(cert) as Data?
+            let issuer = SecCertificateCopyNormalizedIssuerSequence(cert) as Data?
+            guard subject != issuer else { continue }
+            // SecItemExport refuses a certificate that isn't in a keychain
+            // ("No keychain is available"), and the system's intermediates
+            // aren't. So copy each into the scratch keychain and export that
+            // copy, read back by query: the ref SecItemAdd hands back is stale.
+            let der = SecCertificateCopyData(cert) as Data
+            guard let copy = SecCertificateCreateWithData(nil, der as CFData) else { continue }
+            let added = SecItemAdd([kSecClass as String: kSecClassCertificate,
+                                    kSecValueRef as String: copy,
+                                    kSecUseKeychain as String: keychain] as CFDictionary, nil)
+            guard added == errSecSuccess || added == errSecDuplicateItem,
+                  let staged = certificates(in: keychain).first(where: { SecCertificateCopyData($0) as Data == der })
+            else {
+                fail("Couldn't stage intermediate \(SecCertificateCopySubjectSummary(cert) as String? ?? "?") (\(added)).")
+            }
+            items.append(staged)
+        }
     }
 }
 
@@ -185,14 +217,18 @@ if [ -n "$SRC" ]; then
         fi
         echo
     fi
-    security create-keychain -p "" "$SCRATCH_KC"
-    EXPORT_KEYCHAIN="$SCRATCH_KC" IN_PASSPHRASE="$SRC_PASS" P12_PASSPHRASE="$PASS" \
-        "${WORK}/export-identity" "$HASH" "${WORK}/cert.p12" "$SRC"
-    unset SRC_PASS
 else
+    # Straight from the keychain: the identity alone first, then on through
+    # the same path as a file would take, which adds the intermediates.
     echo "Exporting certificate ${HASH} — approve the keychain prompt with your login password."
-    P12_PASSPHRASE="$PASS" "${WORK}/export-identity" "$HASH" "${WORK}/cert.p12"
+    P12_PASSPHRASE="$PASS" "${WORK}/export-identity" "$HASH" "${WORK}/keychain.p12"
+    SRC="${WORK}/keychain.p12"
+    SRC_PASS="$PASS"
 fi
+security create-keychain -p "" "$SCRATCH_KC"
+EXPORT_KEYCHAIN="$SCRATCH_KC" IN_PASSPHRASE="$SRC_PASS" P12_PASSPHRASE="$PASS" \
+    "${WORK}/export-identity" "$HASH" "${WORK}/cert.p12" "$SRC"
+unset SRC_PASS
 
 # Check it the way release.yml will: import into an empty keychain and look for
 # the hash among the identities that validate. Exactly one should.
