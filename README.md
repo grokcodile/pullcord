@@ -170,6 +170,8 @@ It needs six repository secrets. Each step is skipped rather than failed when it
 | `AC_API_KEY_BASE64` | the `.p8` API key file, base64-encoded |
 | `TAP_PUSH_TOKEN` | a token with `contents:write` on `grokcodile/homebrew-tap` |
 
+After renewing the certificate, `./update-ci-cert.sh Certificates.p12` (a `.p12` exported from Keychain Access) sets both certificate secrets. It sends only the identity named by `SIGN_IDENTITY`, plus its intermediate, re-wrapped under a random password, then runs the workflow once from `main` as a dry run that publishes nothing.
+
 Notarization uses an App Store Connect API key rather than an Apple ID and app-specific password: it's the non-interactive path, it doesn't put an account password in CI, and it's revocable on its own without touching the Apple ID. It's the same key as the local `grokcodile` profile above — one credential to rotate, not two.
 
 ```sh
