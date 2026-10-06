@@ -64,10 +64,10 @@ let panels: [Panel] = [
     Panel(name: "Keep Awake", symbol: "mug.fill", glyphPath: nil, detail: "Hold your Mac awake through a long render, a download, or a presentation.", spotlightKey: 0, defaultsKey: "keepawake"),
     Panel(name: "Color Picker", symbol: "eyedropper", glyphPath: nil, detail: "Magnify any pixel on screen and copy its exact color as code.", spotlightKey: 0, defaultsKey: "colorpicker"),
     Panel(name: "Color History", symbol: "paintpalette", glyphPath: nil, detail: "Your last twenty picks, ready to copy again, drag out as a swatch, or pin.", spotlightKey: 0, defaultsKey: "colorhistory"),
-    Panel(name: "Capture Text", symbol: "text.viewfinder", glyphPath: nil, detail: "Pull the text off anything on screen — a screenshot, a PDF, a paused video.", spotlightKey: 0, defaultsKey: "textcapture"),
-    Panel(name: "Dictate Text", symbol: "waveform.badge.microphone", glyphPath: nil, detail: "Hold a key and speak; let go and what you said is typed where the cursor is.", spotlightKey: 0, defaultsKey: "dictation"),
-    Panel(name: "Rewrite Text", symbol: "text.badge.checkmark", glyphPath: nil, detail: "Clean up, restyle, shorten or translate what you've selected, on your Mac.", spotlightKey: 0, defaultsKey: "rewrite"),
-    Panel(name: "Speak Text", symbol: "text.bubble", glyphPath: nil, detail: "Have your Mac read the text you've selected out loud, in a Siri voice.", spotlightKey: 0, defaultsKey: "speakclipboard"),
+    Panel(name: "Capture", symbol: "text.viewfinder", glyphPath: nil, detail: "Pull the text off anything on screen — a screenshot, a PDF, a paused video.", spotlightKey: 0, defaultsKey: "textcapture"),
+    Panel(name: "Dictate", symbol: "waveform.badge.microphone", glyphPath: nil, detail: "Hold a key and speak; let go and what you said is typed where the cursor is.", spotlightKey: 0, defaultsKey: "dictation"),
+    Panel(name: "Rewrite", symbol: "text.badge.checkmark", glyphPath: nil, detail: "Clean up, restyle, shorten or translate what you've selected, on your Mac.", spotlightKey: 0, defaultsKey: "rewrite"),
+    Panel(name: "Speak", symbol: "text.bubble", glyphPath: nil, detail: "Have your Mac read the text you've selected out loud, in a Siri voice.", spotlightKey: 0, defaultsKey: "speakclipboard"),
 ]
 
 /// Panels shown in the "System Utilities" group rather than the "Spotlight" group,
