@@ -82,7 +82,7 @@ New versions arrive with `brew upgrade --cask pullcord`.
 
 ### Download the disk image
 
-1. Download the latest **[Pullcord.dmg](https://github.com/grokcodile/pullcord/releases/latest/download/Pullcord.dmg)** — 824 KB — (or browse [all releases](https://github.com/grokcodile/pullcord/releases)).
+1. Download the latest **[Pullcord.dmg](https://github.com/grokcodile/pullcord/releases/latest/download/Pullcord.dmg)** — 459 KB — (or browse [all releases](https://github.com/grokcodile/pullcord/releases)).
 2. Open the `.dmg` and drag **Pullcord** into your `Applications` folder.
 
 The released build is signed with a Developer ID and notarized by Apple, so it opens normally — no "unidentified developer" warning. macOS may show a one-time "downloaded from the Internet" confirmation; just click **Open**.
