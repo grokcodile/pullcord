@@ -8,27 +8,32 @@ on:
 permissions:
   contents: write
 
+# This file is kept identical to Key54's apart from the APP / CASK lines and
+# Key54's pngquant step, so `diff` between the two shows only what really
+# differs. Change both together.
+
 jobs:
   build:
-    # macOS 26 is not a preference here, it's a requirement: main.swift links
-    # FoundationModels and targets macos26.0, neither of which exists in an
-    # older SDK.
+    # The apps target macOS 26 (Info.plist's LSMinimumSystemVersion, read by
+    # build.sh), so they need at least the macOS 26 SDK — Key54's Liquid Glass
+    # and Pullcord's FoundationModels live there. build.sh pins arm64, so the
+    # runner's own architecture doesn't matter.
     runs-on: macos-26
     env:
-      # Run JS actions on Node 24 (silences the Node 20 deprecation warning).
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      APP: Pullcord
+      CASK: pullcord
       # These flip on automatically once the corresponding repo secrets exist,
       # so a run without them still builds — it just doesn't sign or publish.
       HAS_SIGNING: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.MACOS_CERT_PASSWORD != '' }}
       HAS_NOTARY: ${{ secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' && secrets.AC_API_KEY_BASE64 != '' }}
       HAS_TAP: ${{ secrets.TAP_PUSH_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
-
       # A secret that exists but is empty silently switches its whole group off,
       # and the build carries on and produces an ad-hoc-signed app. That is fine
-      # for a manual run and disastrous for a tag, so on a tag it stops here.
-      # Byte counts, never values — enough to see which secret is blank.
+      # for a manual run and disastrous for a tag: both notarize steps skip, the
+      # DMG publishes anyway, and every downloader meets "Apple could not verify
+      # this app is free of malware". So on a tag it stops here. Byte counts,
+      # never values — enough to see which secret is blank.
       - name: Preflight
         env:
           CERT: ${{ secrets.MACOS_CERT_P12_BASE64 }}
@@ -48,7 +53,7 @@ jobs:
           FAIL=0
 
           # Shape checks. A wrong-but-present value costs a full build before
-          # notarytool rejects it three minutes in; these catch it immediately.
+          # notarytool rejects it minutes in; these catch it immediately.
           # Only the shapes are ever tested, never echoed.
           if [ "$HAS_NOTARY" = "true" ]; then
             if ! printf '%s' "$ISSUER" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
@@ -68,6 +73,8 @@ jobs:
             esac
           fi
 
+          # (Notary without signing needs no check of its own: notarytool refuses
+          # an ad-hoc signature loudly.)
           if [ "${{ startsWith(github.ref, 'refs/tags/') }}" = "true" ]; then
             if [ "$HAS_SIGNING" != "true" ] || [ "$HAS_NOTARY" != "true" ]; then
               echo "::error::Refusing to publish a tag without signing and notarization secrets — the release would be ad-hoc signed and Gatekeeper would reject it. Check which secret reads 0 bytes above."
@@ -75,6 +82,8 @@ jobs:
             fi
           fi
           exit $FAIL
+
+      - uses: actions/checkout@v7
 
       - name: Import Developer ID certificate
         if: env.HAS_SIGNING == 'true'
@@ -110,7 +119,7 @@ jobs:
 
       # The git tag is the single source of truth for the version: stamp it into
       # Info.plist before building so the app version can never drift from the
-      # release (v0.3 → 0.3). Skipped on manual runs, which have no tag.
+      # release (v1.18 → 1.18). Skipped on manual runs, which have no tag.
       - name: Stamp version from tag
         if: startsWith(github.ref, 'refs/tags/')
         run: |
@@ -121,20 +130,6 @@ jobs:
 
       - name: Build
         run: bash build.sh
-
-      # build.sh targets "$(uname -m)-apple-macos26.0", so the runner's own
-      # architecture decides the binary's. The cask declares arm64 and Apple
-      # Intelligence is Apple Silicon only, so an x86_64 runner would ship a
-      # build nobody can install. Fail here rather than at someone's `brew
-      # install`.
-      - name: Verify architecture
-        run: |
-          ARCHS=$(lipo -archs build/Pullcord.app/Contents/MacOS/Pullcord)
-          echo "Built for: $ARCHS"
-          if [ "$ARCHS" != "arm64" ]; then
-            echo "::error::Expected arm64, got '$ARCHS' — the runner is not Apple Silicon."
-            exit 1
-          fi
 
       # Notarize the .app and staple the ticket into the bundle. This runs
       # before the DMG is built so the image contains an already-stapled app —
@@ -148,27 +143,28 @@ jobs:
         run: |
           echo "$AC_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/key.p8"
           # ditto, not zip: it preserves the bundle's symlinks and metadata.
-          ditto -c -k --keepParent "build/Pullcord.app" "$RUNNER_TEMP/submit.zip"
+          ditto -c -k --keepParent "build/$APP.app" "$RUNNER_TEMP/submit.zip"
           xcrun notarytool submit "$RUNNER_TEMP/submit.zip" \
             --key "$RUNNER_TEMP/key.p8" \
             --key-id "$AC_API_KEY_ID" \
             --issuer "$AC_API_ISSUER_ID" \
             --wait
-          xcrun stapler staple "build/Pullcord.app"
+          xcrun stapler staple "build/$APP.app"
 
       # A disk image with an Applications symlink, so opening it gives the
       # drag-across window people expect rather than a loose app in Downloads.
       - name: Package DMG
         run: |
           mkdir -p dist/dmgroot
-          cp -R "build/Pullcord.app" dist/dmgroot/
+          cp -R "build/$APP.app" dist/dmgroot/
           ln -s /Applications dist/dmgroot/Applications
           # -fs HFS+ is not cosmetic. Without it hdiutil now defaults to APFS,
-          # which lays an 11MB volume under 700KB of content and leaves its slack
-          # full of data that zlib then faithfully compresses — 47% of the
-          # published DMG was that. Same content on HFS+: 793KB → 420KB.
-          hdiutil create -volname "Pullcord" -srcfolder dist/dmgroot \
-            -ov -fs "HFS+" -format UDZO "dist/Pullcord.dmg"
+          # which lays an 11MB volume under well under 1MB of content and leaves
+          # its slack full of data that zlib then faithfully compresses — 44–47%
+          # of each app's published DMG was that (Key54 882KB → 496KB, Pullcord
+          # 793KB → 420KB on HFS+).
+          hdiutil create -volname "$APP" -srcfolder dist/dmgroot \
+            -ov -fs "HFS+" -format UDZO "dist/$APP.dmg"
           # Sign the disk image itself, with the app's pinned identity, before it
           # is notarized. Unsigned, it rests on its stapled ticket alone, and a
           # disk-image check (spctl -t open --context context:primary-signature)
@@ -176,8 +172,8 @@ jobs:
           # for a disk image, but it keeps every codesign call alike.
           if [ -n "${SIGN_IDENTITY:-}" ]; then
             codesign --force --options runtime --timestamp \
-              --sign "$SIGN_IDENTITY" "dist/Pullcord.dmg"
-            codesign --verify --strict --verbose=2 "dist/Pullcord.dmg"
+              --sign "$SIGN_IDENTITY" "dist/$APP.dmg"
+            codesign --verify --strict --verbose=2 "dist/$APP.dmg"
           fi
 
       # The DMG needs notarizing too. Stapling the app (above) is what lets a
@@ -191,13 +187,13 @@ jobs:
           AC_API_KEY_BASE64: ${{ secrets.AC_API_KEY_BASE64 }}
         run: |
           echo "$AC_API_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/key.p8"
-          xcrun notarytool submit "dist/Pullcord.dmg" \
+          xcrun notarytool submit "dist/$APP.dmg" \
             --key "$RUNNER_TEMP/key.p8" \
             --key-id "$AC_API_KEY_ID" \
             --issuer "$AC_API_ISSUER_ID" \
             --wait
-          xcrun stapler staple "dist/Pullcord.dmg"
-          shasum -a 256 dist/Pullcord.dmg
+          xcrun stapler staple "dist/$APP.dmg"
+          shasum -a 256 "dist/$APP.dmg"
 
       # Gatekeeper's verdict, not just codesign's: before anything is published,
       # the app and the DMG must both carry a valid stapled ticket and assess as
@@ -207,8 +203,8 @@ jobs:
       - name: Gatekeeper check
         if: env.HAS_NOTARY == 'true'
         run: |
-          xcrun stapler validate "build/Pullcord.app"
-          xcrun stapler validate "dist/Pullcord.dmg"
+          xcrun stapler validate "build/$APP.app"
+          xcrun stapler validate "dist/$APP.dmg"
           assess() {  # <label> <spctl args…>
             local label="$1" out status=0; shift
             out="$(spctl --assess -v "$@" 2>&1)" || status=$?
@@ -218,46 +214,74 @@ jobs:
               exit 1
             fi
           }
-          assess "the app" --type execute "build/Pullcord.app"
-          assess "the DMG" --type open --context context:primary-signature "dist/Pullcord.dmg"
+          assess "the app" --type execute "build/$APP.app"
+          assess "the DMG" --type open --context context:primary-signature "dist/$APP.dmg"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      # A manual run publishes nothing, so keep what it built: the signed,
+      # notarized, stapled DMG can then be checked (codesign / spctl / stapler)
+      # before a tag commits to a release.
+      - name: Keep dry-run DMG
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v7
         with:
-          name: Pullcord.dmg
-          path: dist/Pullcord.dmg
+          name: ${{ env.APP }}-dry-run
+          path: dist/${{ env.APP }}.dmg
+          retention-days: 7
 
-      # Only a tag push publishes; a manual run builds and notarizes as a
-      # dry-run, leaving the zip as an artifact to download and check.
+      # Only a tag push publishes; a manual run builds + notarizes as a dry-run.
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
-          files: dist/Pullcord.dmg
+          files: dist/${{ env.APP }}.dmg
           generate_release_notes: true
 
-      # Keep the Homebrew tap in sync so `brew upgrade --cask pullcord` gets
-      # new versions. Needs a TAP_PUSH_TOKEN secret (a token with
-      # contents:write on grokcodile/homebrew-tap); skipped if it isn't set.
+      # Keep the Homebrew tap in sync so `brew upgrade --cask <app>` gets new
+      # versions. Needs a TAP_PUSH_TOKEN secret (a token with contents:write on
+      # grokcodile/homebrew-tap); skipped if it isn't set.
+      #
+      # The cask's minimum macOS comes from the same place the build's does —
+      # Info.plist's LSMinimumSystemVersion — so raising it there raises it here
+      # on the next release, and never before: the cask keeps describing the
+      # release it points at. Homebrew's own table names the version (26 →
+      # :tahoe), so no list of macOS codenames lives in this file.
       - name: Update Homebrew tap
         if: startsWith(github.ref, 'refs/tags/') && env.HAS_TAP == 'true'
         env:
           TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          SHA=$(shasum -a 256 dist/Pullcord.dmg | awk '{print $1}')
-          git clone "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/grokcodile/homebrew-tap.git" tap
-          cd tap
-          sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" Casks/pullcord.rb
-          sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" Casks/pullcord.rb
-          # sed is silent when it matches nothing, so a renamed field or file
-          # would leave the cask on the old version and the release would look
-          # like a success. Read it back instead of trusting the substitution.
-          GOT=$(awk -F'"' '/^  version /{print $2}' Casks/pullcord.rb)
-          if [ "$GOT" != "$VERSION" ]; then
-            echo "::error::Cask version is '${GOT}' after substitution, expected '${VERSION}' — the cask was not updated."
+          SHA=$(shasum -a 256 "dist/$APP.dmg" | awk '{print $1}')
+          MIN_MACOS=$(plutil -extract LSMinimumSystemVersion raw Info.plist)
+          MACOS=$(brew ruby -e "puts MacOSVersion.new('${MIN_MACOS}').to_sym" 2>/dev/null || true)
+          if ! printf '%s' "$MACOS" | grep -Eq '^[a-z_]+$'; then
+            echo "::error::This runner's Homebrew has no name for macOS ${MIN_MACOS} (got '${MACOS}'), so the cask's depends_on can't be set."
             exit 1
           fi
+          echo "version=${VERSION}  sha256=${SHA}  macos=:${MACOS} (${MIN_MACOS})"
+
+          git clone "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/grokcodile/homebrew-tap.git" tap
+          cd tap
+          CASK_FILE="Casks/${CASK}.rb"
+          sed -i '' -E "s/^  version \".*\"/  version \"${VERSION}\"/" "$CASK_FILE"
+          sed -i '' -E "s/^  sha256 \".*\"/  sha256 \"${SHA}\"/" "$CASK_FILE"
+          sed -i '' -E "s/^  depends_on macos: .*/  depends_on macos: :${MACOS}/" "$CASK_FILE"
+          # sed is silent when it matches nothing, so a renamed field or file
+          # would leave the cask on the old values and the release would look
+          # like a success. Read every one back instead of trusting it.
+          check() {  # <what> <line pattern> <expected line>
+            if ! grep -qxF "$3" "$CASK_FILE"; then
+              echo "::error::$CASK_FILE has no '$3' after substitution — the cask's $1 was not updated."
+              grep -nE "$2" "$CASK_FILE" || true
+              exit 1
+            fi
+          }
+          check version    '^  version '          "  version \"${VERSION}\""
+          check sha256     '^  sha256 '           "  sha256 \"${SHA}\""
+          check depends_on '^  depends_on macos'  "  depends_on macos: :${MACOS}"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # Already correct (a re-run, or the cask was bumped by hand first) is
@@ -265,7 +289,16 @@ jobs:
           # staged, which used to fail the whole release after it had published.
           if git diff --quiet; then
             echo "Cask already at ${VERSION}; nothing to push."
-          else
-            git commit -aqm "pullcord ${VERSION}"
-            git push
+            exit 0
           fi
+          git commit -aqm "${CASK} ${VERSION}"
+          # Both apps push to this one tap, so two releases close together can
+          # race; the loser rebases onto the winner (different files, so it
+          # always applies) and tries again.
+          for attempt in 1 2 3; do
+            git push -q && exit 0
+            echo "Push rejected (attempt ${attempt}); rebasing onto the tap's latest."
+            git pull -q --rebase
+          done
+          echo "::error::Could not push the cask update after 3 attempts."
+          exit 1

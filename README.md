@@ -80,16 +80,18 @@ brew install --cask grokcodile/tap/pullcord
 
 New versions arrive with `brew upgrade --cask pullcord`.
 
-### Download the app
+### Download the disk image
 
 1. Download the latest **[Pullcord.dmg](https://github.com/grokcodile/pullcord/releases/latest/download/Pullcord.dmg)** — 824 KB — (or browse [all releases](https://github.com/grokcodile/pullcord/releases)).
 2. Open the `.dmg` and drag **Pullcord** into your `Applications` folder.
 
 The released build is signed with a Developer ID and notarized by Apple, so it opens normally — no "unidentified developer" warning. macOS may show a one-time "downloaded from the Internet" confirmation; just click **Open**.
 
+> **Apple Silicon, macOS 26 or later.** The released `.dmg` is arm64 only — Rewrite Text's on-device model needs Apple Silicon anyway.
+
 ### Updates
 
-Pullcord checks GitHub for a newer release when it launches, every six hours while running, and each time you open its settings — so the window always shows current state. When one is available, a blue strip appears across the bottom of the settings window with an **Update** button.
+Pullcord checks GitHub for a newer release when you open it and every time you open its settings — so the window always shows current state. It never polls in the background: when it starts silently at login it checks once, and brings the window up only if there's an update to show. When one is available, a blue strip appears across the bottom of the settings window with an **Update** button.
 
 The settings window also sizes itself to your screen: on a display too short to show it all, it scrolls, with the scroll bar always visible rather than fading out — a window that is silently taller than it looks is worse than one that admits it.
 
@@ -113,7 +115,7 @@ This is the one to use if you're working on it. It builds, quits whatever copy i
 bash build.sh    # → ./build/Pullcord.app
 ```
 
-Builds without installing — what `install.sh` and `notarize.sh` both call.
+Builds without installing — what `install.sh` and the release workflow both call.
 
 `build.sh` signs with the **Developer ID Application** certificate named by `SIGN_IDENTITY`, using the hardened runtime and a trusted timestamp, and then reads the certificate back out of the signature to confirm it's the one you asked for. If that certificate isn't in your keychain it falls back to an ad-hoc signature — unless you set `SIGN_IDENTITY` yourself, in which case a missing certificate is an error.
 
@@ -126,38 +128,21 @@ SIGN_IDENTITY=<40-character hash> bash build.sh
 
 That distinction matters for more than distribution: **macOS ties Accessibility and Screen Recording to the signing identity**, and an ad-hoc build gets a new identity every time it's compiled — so every rebuild appears to macOS as a different app and the permissions have to be granted again. Signed with a stable Developer ID, they're granted once and stay. (It's the identity that counts, not the location, so moving the app to `/Applications` doesn't cost you the grants.)
 
-### Notarizing a release
-
-```sh
-bash notarize.sh    # → ./dist/Pullcord.dmg, stapled
-```
-
-Signing alone still leaves Gatekeeper showing the "unidentified developer" warning on someone else's Mac; notarizing is what clears it. One-time setup, which stores the credential in your keychain:
-
-```sh
-xcrun notarytool store-credentials grokcodile \
-    --key ~/path/to/AuthKey_XXXXXXXXXX.p8 \
-    --key-id XXXXXXXXXX \
-    --issuer XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-```
-
-That's the same App Store Connect API key CI uses, so local and CI authenticate as one identity and rotate together. Make one under **Users and Access → Integrations → App Store Connect API → Team Keys** with the **Developer** role — personal keys aren't eligible for the Notary API, and the `.p8` downloads only once.
-
-**The profile is named for the team, not the app.** The credential is an App Store Connect key for the whole account, so every app here shares this one profile; naming it after an app is how its predecessor ended up called `liteswitch` and went stale on a rename. `NOTARY_PROFILE` overrides it if you need a different one.
-
-After that, `notarize.sh` builds, submits, waits for Apple, staples the ticket into the bundle, builds a disk image, signs it with the same certificate, notarizes that too, and leaves `dist/Pullcord.dmg`.
-
 ### Cutting a release
 
-Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)). Pushing a tag is the whole process:
+Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/workflows/release.yml)) and only there — nothing is notarized or published from a local machine. Pushing a tag is the whole process:
 
 ```sh
 git tag v0.3 && git push origin v0.3
 ```
 
-That runs on a `macos-26` runner and, in order: imports the Developer ID certificate, stamps the version from the tag into `Info.plist`, builds, checks the binary really is arm64, notarizes and staples the app, builds, signs and notarizes a disk image, checks that Gatekeeper accepts both as Notarized Developer ID, publishes a GitHub Release with generated notes, and bumps `version` and `sha256` in the Homebrew cask so `brew upgrade --cask pullcord` picks it up.
+That runs on a `macos-26` runner and, in order: checks the secrets are present and well-formed, imports the Developer ID certificate, stamps the version from the tag into `Info.plist`, builds, notarizes and staples the app, builds, signs and notarizes a disk image, checks that Gatekeeper accepts both as Notarized Developer ID, publishes a GitHub Release with generated notes, and updates the Homebrew cask's `version`, `sha256` and `depends_on macos` so `brew upgrade --cask pullcord` picks it up.
 
-**The tag is the version.** `Info.plist` is stamped from the tag during the build, so the tag and the shipped app can never disagree. (Release commits bump it too — `Pullcord 1.30` — which is what a local `notarize.sh` build reads.) Running the workflow manually (`workflow_dispatch`) from `main` builds and notarizes without publishing, and leaves the disk image as an artifact — useful for checking a build before tagging. Run it from a branch, not a tag: from a tag ref it publishes.
+**`Info.plist`'s `LSMinimumSystemVersion` is the one place the supported macOS is set.** `build.sh` compiles for it (always arm64), and the release writes the same version into the cask as Homebrew's name for it (26 → `:tahoe`) — so raising it is a one-line change, and the cask only follows once a release that needs it ships.
+
+The workflow is kept identical to Key54's apart from the app name, so `diff` between the two shows only what really differs; change them together.
+
+**The tag is the version.** `Info.plist` is stamped from the tag during the build, so the tag and the shipped app can never disagree. (Release commits bump it too — `Pullcord 1.30` — so a local build never reports itself as older than the release.) Running the workflow manually (`workflow_dispatch`) from `main` builds and notarizes without publishing, and keeps the stapled disk image as the `Pullcord-dry-run` artifact for 7 days — useful for checking a build before tagging. Run it from a branch, not a tag: from a tag ref it publishes.
 
 It needs six repository secrets. On a manual run, a step whose secrets are absent is skipped, so a partly-configured repo still builds; a tag refuses to publish without the signing and notarization ones:
 
@@ -170,7 +155,7 @@ It needs six repository secrets. On a manual run, a step whose secrets are absen
 | `AC_API_KEY_BASE64` | the `.p8` API key file, base64-encoded |
 | `TAP_PUSH_TOKEN` | a token with `contents:write` on `grokcodile/homebrew-tap` |
 
-Notarization uses an App Store Connect API key rather than an Apple ID and app-specific password: it's the non-interactive path, it doesn't put an account password in CI, and it's revocable on its own without touching the Apple ID. It's the same key as the local `grokcodile` profile above — one credential to rotate, not two.
+Notarization uses an App Store Connect API key rather than an Apple ID and app-specific password: it's the non-interactive path, it doesn't put an account password in CI, and it's revocable on its own without touching the Apple ID.
 
 ```sh
 base64 -i Certificates.p12 | gh secret set MACOS_CERT_P12_BASE64
@@ -181,7 +166,7 @@ The app icon ships pre-generated (`icon/AppIcon.icns`); regenerate it from `icon
 
 ## Requirements
 
-- **macOS 26 or later** (the four-panel Spotlight).
+- **macOS 26 or later** (the four-panel Spotlight), on an **Apple Silicon** Mac.
 - **Accessibility** — for anything that synthesizes keystrokes or reads another app's menus: Files, Actions, Clipboard, the System Settings shortcut, Dictate Text, and Rewrite Text.
 - **Screen Recording** — for **Capture Text** only (macOS 26 gates the region selector behind it).
 - **Apple Intelligence** — for **Rewrite Text**, which uses the on-device model. Without it that one tool is unavailable; everything else is unaffected.
