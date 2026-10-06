@@ -82,7 +82,7 @@ New versions arrive with `brew upgrade --cask pullcord`.
 
 ### Download the app
 
-1. Download the latest **[Pullcord.dmg](https://github.com/grokcodile/pullcord/releases/latest/download/Pullcord.dmg)** — 415 KB — (or browse [all releases](https://github.com/grokcodile/pullcord/releases)).
+1. Download the latest **[Pullcord.dmg](https://github.com/grokcodile/pullcord/releases/latest/download/Pullcord.dmg)** — 824 KB — (or browse [all releases](https://github.com/grokcodile/pullcord/releases)).
 2. Open the `.dmg` and drag **Pullcord** into your `Applications` folder.
 
 The released build is signed with a Developer ID and notarized by Apple, so it opens normally — no "unidentified developer" warning. macOS may show a one-time "downloaded from the Internet" confirmation; just click **Open**.
@@ -115,7 +115,14 @@ bash build.sh    # → ./build/Pullcord.app
 
 Builds without installing — what `install.sh` and `notarize.sh` both call.
 
-If a **Developer ID Application** certificate is in your keychain, `build.sh` finds it and signs with it, using the hardened runtime and a trusted timestamp. Otherwise it falls back to an ad-hoc signature.
+`build.sh` signs with the **Developer ID Application** certificate named by `SIGN_IDENTITY`, using the hardened runtime and a trusted timestamp, and then reads the certificate back out of the signature to confirm it's the one you asked for. If that certificate isn't in your keychain it falls back to an ad-hoc signature — unless you set `SIGN_IDENTITY` yourself, in which case a missing certificate is an error.
+
+`SIGN_IDENTITY` is a certificate **SHA-1 hash**, never a name: a keychain can hold several certificates with the same `Developer ID Application: Name (TEAM)` label (a renewal leaves the old one behind), and codesign picks one without saying which. It defaults to the maintainer's certificate; to build with your own, find its hash and pass it:
+
+```sh
+security find-identity -v -p codesigning
+SIGN_IDENTITY=<40-character hash> bash build.sh
+```
 
 That distinction matters for more than distribution: **macOS ties Accessibility and Screen Recording to the signing identity**, and an ad-hoc build gets a new identity every time it's compiled — so every rebuild appears to macOS as a different app and the permissions have to be granted again. Signed with a stable Developer ID, they're granted once and stay. (It's the identity that counts, not the location, so moving the app to `/Applications` doesn't cost you the grants.)
 
@@ -156,7 +163,7 @@ It needs six repository secrets. Each step is skipped rather than failed when it
 
 | Secret | What it is |
 | --- | --- |
-| `MACOS_CERT_P12_BASE64` | Developer ID Application certificate, exported as `.p12`, base64-encoded |
+| `MACOS_CERT_P12_BASE64` | Developer ID Application certificate, exported as `.p12`, base64-encoded — must be the certificate whose hash is `SIGN_CERT_SHA1` in the workflow, or the import step fails |
 | `MACOS_CERT_PASSWORD` | the password set when exporting that `.p12` |
 | `AC_API_KEY_ID` | App Store Connect API key ID |
 | `AC_API_ISSUER_ID` | App Store Connect issuer ID |

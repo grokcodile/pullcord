@@ -51,6 +51,8 @@ fi
 ./build.sh
 
 # Signing must be a real Developer ID, not ad-hoc, or notarization refuses it.
+# (build.sh has already checked which certificate, by hash; this is the backstop
+# for its ad-hoc fallback, which would otherwise get as far as Apple.)
 if ! codesign -dv --verbose=2 "$APP" 2>&1 | grep -q "TeamIdentifier=8UP5SFXY56"; then
     echo "Not signed with a Developer ID — nothing to notarize." >&2
     exit 1
@@ -75,8 +77,11 @@ rm -rf "${DIST}/dmgroot" "$DMG"
 mkdir -p "${DIST}/dmgroot"
 cp -R "$APP" "${DIST}/dmgroot/"
 ln -s /Applications "${DIST}/dmgroot/Applications"
+# -fs HFS+ matches release.yml, and isn't cosmetic: without it hdiutil defaults
+# to APFS, whose slack is compressed along with the content. Measured on this
+# app: 1.24MB without the flag, 0.84MB with it.
 hdiutil create -volname "${APP_NAME}" -srcfolder "${DIST}/dmgroot" \
-    -ov -format UDZO "$DMG"
+    -ov -fs "HFS+" -format UDZO "$DMG"
 rm -rf "${DIST}/dmgroot"
 
 # The image is notarized in its own right: stapling the app stops Gatekeeper
@@ -88,9 +93,11 @@ xcrun stapler staple "$DMG"
 
 echo
 echo "=== verification ==="
+codesign --verify --deep --strict --verbose=2 "$APP"
+codesign -dvv "$APP" 2>&1 | grep -E "^(Authority|TeamIdentifier|Timestamp|Identifier)="
 xcrun stapler validate "$APP"
 xcrun stapler validate "$DMG"
-spctl -a -vv "$APP"
+spctl --assess --type execute -vv "$APP"
 shasum -a 256 "$DMG"
 echo
 echo "Notarized: ${DMG}"

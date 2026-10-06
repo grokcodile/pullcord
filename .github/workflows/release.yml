@@ -22,6 +22,12 @@ jobs:
       HAS_SIGNING: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.MACOS_CERT_PASSWORD != '' }}
       HAS_NOTARY: ${{ secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' && secrets.AC_API_KEY_BASE64 != '' }}
       HAS_TAP: ${{ secrets.TAP_PUSH_TOKEN != '' }}
+      # The certificate to sign with, by SHA-1 hash — never by name, which can
+      # match an older certificate of the same label. Keep in step with
+      # DEFAULT_SIGN_IDENTITY in build.sh. It only becomes SIGN_IDENTITY (which
+      # build.sh treats as mandatory) once the import step has found it, so a
+      # run without signing secrets still builds ad-hoc, as documented.
+      SIGN_CERT_SHA1: DEA1A3749B06CF3619F72152EFC35A48E380C4E4
     steps:
       - uses: actions/checkout@v4
 
@@ -90,9 +96,22 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN" >/dev/null
-          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | sed -E 's/.*"(.*)"/\1/')
-          echo "Using identity: $IDENTITY"
-          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          # The .p12 must hold exactly the certificate named by SIGN_CERT_SHA1. A
+          # .p12 exported before the renewal still imports cleanly, so without
+          # this check the build would only fail later, or sign with whatever
+          # else was in it.
+          security find-identity -v -p codesigning "$KEYCHAIN"
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -qi "$SIGN_CERT_SHA1"; then
+            # -v hides identities whose chain doesn't validate, so show those too:
+            # the new certificate chains to the Developer ID G2 CA, and a .p12
+            # without it can look "missing" when it is merely untrusted.
+            echo "--- including identities that did not validate:"
+            security find-identity -p codesigning "$KEYCHAIN"
+            echo "::error::No valid identity $SIGN_CERT_SHA1 from MACOS_CERT_P12_BASE64. Either the .p12 lacks that certificate and its private key (re-export the current Developer ID Application certificate), or it is present but its chain, the Developer ID G2 CA, is not trusted on this runner (see the unfiltered list above)."
+            exit 1
+          fi
+          echo "Using certificate $SIGN_CERT_SHA1"
+          echo "SIGN_IDENTITY=$SIGN_CERT_SHA1" >> "$GITHUB_ENV"
 
       # The git tag is the single source of truth for the version: stamp it into
       # Info.plist before building so the app version can never drift from the
