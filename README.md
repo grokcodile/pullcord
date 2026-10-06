@@ -52,7 +52,7 @@ Two more that make the point:
 
 **System Utilities**
 
-- **System Settings** — with **Smart Toggle**, it opens with the cursor already in the search field, so you can type the setting you want instead of hunting for it, and pressing the shortcut again hides it and returns you to the app you came from.
+- **System Settings** — pressing the shortcut again hides it and returns you to the app you came from. With **Focus Search**, it opens with the cursor already in the search field, so you can type the setting you want instead of hunting for it.
 - **Keep Awake** — stops your Mac sleeping; a cup appears in the menu bar while it's on (click to stop), and **Screen Sleep** lets the display sleep while the system stays up. It switches off automatically if Pullcord quits, so it can't strand your Mac awake.
 - **Color Picker** — pops the system loupe and copies the pixel under your cursor as **Hex, RGB, HSL, or SwiftUI**, plus the raw color for dropping into a color well. A pill flashes the swatch and code, and every pick is saved to Color History.
 - **Color History** — a window of everything you've picked. **Click** a swatch to re-copy its code, **drag** it out to save the swatch as a PNG, **pin** the keepers. Labels default to the hex and can be renamed. Keeps the last 20; pins persist at the top.
@@ -147,7 +147,7 @@ Two tools work differently:
 - **Dictate Text** takes a **held key** (Right ⌥ or Right ⌘) rather than a chord, because push-to-talk needs to know when you let go.
 - **Speak Text** has no Pullcord shortcut at all. It shows the one **macOS** has assigned to Speak selection, since that feature is macOS's own.
 
-Each card carries one option: **Smart Toggle** for System Settings (on), **Screen Sleep** for Keep Awake (on), the copy **format** for Color Picker (Hex), **View…** for Color History, **Remove Breaks** for Capture Text (on), **Settings** for Rewrite Text, and the **hold key** for Dictate Text (Right ⌥).
+Each card carries one option: **Focus Search** for System Settings (off), **Screen Sleep** for Keep Awake (on), the copy **format** for Color Picker (Hex), **View…** for Color History, **Remove Breaks** for Capture Text (on), **Settings** for Rewrite Text, and the **hold key** for Dictate Text (Right ⌥).
 
 ## How it works
 

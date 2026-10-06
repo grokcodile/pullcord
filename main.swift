@@ -14,7 +14,7 @@
 //                 documented gesture. Needs Accessibility to post keystrokes.
 //
 // A group of "System Utilities" ride alongside the panels, none needing any
-// permission: open System Settings (with a smart toggle back); a Color Picker
+// permission: open System Settings (pressed again, back where you were); a Color Picker
 // (NSColorSampler → clipboard); Capture Text (screencapture -i region → Vision
 // OCR → clipboard); Keep Awake (an IOKit power assertion that blocks sleep); and
 // Speak Text — which doesn't re-implement speech at all: it mirrors macOS's own
@@ -60,7 +60,7 @@ let panels: [Panel] = [
     Panel(name: "Files", symbol: "folder", glyphPath: nil, detail: "Find a document or folder by its name, or by a phrase somewhere inside it.", spotlightKey: CGKeyCode(kVK_ANSI_2), defaultsKey: "files"),
     Panel(name: "Actions", symbol: "square.2.layers.3d", glyphPath: nil, detail: "Run any Shortcut or system action by name — a command palette for your Mac.", spotlightKey: CGKeyCode(kVK_ANSI_3), defaultsKey: "actions"),
     Panel(name: "Clipboard", symbol: "doc.on.doc", glyphPath: nil, detail: "Reach back through what you've copied and paste something from earlier.", spotlightKey: CGKeyCode(kVK_ANSI_4), defaultsKey: "clipboard"),
-    Panel(name: "System Settings", symbol: "gear", glyphPath: nil, detail: "Jump to System Settings and, with Smart Toggle, land in its search field — then straight back again.", spotlightKey: 0, defaultsKey: "settings"),
+    Panel(name: "System Settings", symbol: "gear", glyphPath: nil, detail: "Jump to System Settings — optionally straight into its search field — then straight back again.", spotlightKey: 0, defaultsKey: "settings"),
     Panel(name: "Keep Awake", symbol: "mug.fill", glyphPath: nil, detail: "Hold your Mac awake through a long render, a download, or a presentation.", spotlightKey: 0, defaultsKey: "keepawake"),
     Panel(name: "Color Picker", symbol: "eyedropper", glyphPath: nil, detail: "Magnify any pixel on screen and copy its exact color as code.", spotlightKey: 0, defaultsKey: "colorpicker"),
     Panel(name: "Color History", symbol: "paintpalette", glyphPath: nil, detail: "Your last twenty picks, ready to copy again, drag out as a swatch, or pin.", spotlightKey: 0, defaultsKey: "colorhistory"),
@@ -280,9 +280,13 @@ extension UserDefaults {
             self.set(raw, forKey: "rewriteActions")
         }
     }
-    var settingsToggle: Bool {
-        get { object(forKey: "settingsToggle") as? Bool ?? true }
-        set { set(newValue, forKey: "settingsToggle") }
+    /// Whether opening System Settings puts the cursor in its search field.
+    /// Off by default. A new key rather than the old "settingsToggle", which
+    /// also governed the toggle back and defaulted on — reusing it would have
+    /// switched search on for everyone who never touched it.
+    var settingsFocusSearch: Bool {
+        get { bool(forKey: "settingsFocusSearch") }
+        set { set(newValue, forKey: "settingsFocusSearch") }
     }
     var colorFormat: ColorFormat {
         get { ColorFormat(rawValue: integer(forKey: "colorFormat")) ?? .hex }
@@ -805,8 +809,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? SMAppService.mainApp.register()
         }
         // No shortcuts are seeded — a fresh install starts blank, and the user
-        // records the ones they want. (Format defaults to Hex, Smart Toggle to
-        // On, via their UserDefaults getters.)
+        // records the ones they want. (Format defaults to Hex, Focus Search to
+        // Off, via their UserDefaults getters.)
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(appDidActivate(_:)),
             name: NSWorkspace.didActivateApplicationNotification, object: nil)
@@ -1367,8 +1371,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if panel.defaultsKey == "settings" {
             let settingsURL = URL(fileURLWithPath: "/System/Applications/System Settings.app")
             let frontmost = NSWorkspace.shared.frontmostApplication
-            if UserDefaults.standard.settingsToggle,
-               frontmost?.bundleIdentifier == "com.apple.systempreferences" {
+            // Always a toggle: pressed again from System Settings, it goes back.
+            if frontmost?.bundleIdentifier == "com.apple.systempreferences" {
                 frontmost?.hide()
                 if let prev = previousApp, !prev.isTerminated {
                     prev.activate()
@@ -1376,11 +1380,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             let config = NSWorkspace.OpenConfiguration()
-            // Smart Toggle is the "get me there and back" switch, so it also
-            // decides whether you arrive ready to type. Opening onto whichever
-            // pane you left behind is fine when you went looking for that pane;
-            // it is a dead end when you came for a setting you'd have to hunt.
-            let wantsSearch = UserDefaults.standard.settingsToggle
+            // Focus Search decides whether you arrive ready to type. Opening onto
+            // whichever pane you left behind is fine when you went looking for
+            // that pane; it is a dead end when you came for a setting you'd
+            // have to hunt.
+            let wantsSearch = UserDefaults.standard.settingsFocusSearch
             NSWorkspace.shared.openApplication(at: settingsURL, configuration: config) { [weak self] app, _ in
                 guard wantsSearch, let app else { return }
                 DispatchQueue.main.async { self?.focusSettingsSearch(in: app) }
@@ -3372,9 +3376,9 @@ final class SettingsWindow: NSWindow, NSWindowDelegate {
                 v.addSubview(check)
             }
             if panel.defaultsKey == "settings" {
-                centeredCheckbox("Smart Toggle", on: UserDefaults.standard.settingsToggle,
-                                 action: #selector(smartToggleChanged(_:)),
-                                 tip: "Opens into the search field, ready to type. Press again to go back where you were.")
+                centeredCheckbox("Focus Search", on: UserDefaults.standard.settingsFocusSearch,
+                                 action: #selector(focusSearchChanged(_:)),
+                                 tip: "Opens with the cursor in the search field, ready to type.")
             }
             if panel.defaultsKey == "textcapture" {
                 centeredCheckbox("Remove Breaks", on: !UserDefaults.standard.ocrKeepLineBreaks,
@@ -3740,8 +3744,8 @@ final class SettingsWindow: NSWindow, NSWindowDelegate {
 
     @objc private func forceQuit() { NSApp.terminate(nil) }
     @objc private func saveAndClose() { close() }
-    @objc private func smartToggleChanged(_ sender: NSButton) {
-        UserDefaults.standard.settingsToggle = sender.state == .on
+    @objc private func focusSearchChanged(_ sender: NSButton) {
+        UserDefaults.standard.settingsFocusSearch = sender.state == .on
     }
 
     @objc private func holdKeyChanged(_ sender: NSPopUpButton) {
