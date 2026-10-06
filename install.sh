@@ -15,8 +15,8 @@
 # the dictated text coming back mangled and repeated. Installing to a stable path and
 # quitting the old copy first is what stops it.
 #
-# build.sh deliberately doesn't do any of this: notarize.sh calls it and needs the app
-# left sitting in ./build.
+# build.sh deliberately doesn't do any of this: CI calls it and needs the app left
+# sitting in ./build.
 set -e
 
 cd "$(dirname "$0")"

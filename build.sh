@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Pullcord.app into ./build. Used by install.sh, notarize.sh and CI.
+# Builds Pullcord.app into ./build. Used by both install.sh and CI.
 #
 # Code-signing: SIGN_IDENTITY picks the identity and must be a certificate's SHA-1
 # hash (40 hex digits). It defaults to the Developer ID Application cert for team
@@ -52,14 +52,18 @@ rm -rf ./build
 mkdir -p "${BUILD_DIR}/Contents/MacOS"
 mkdir -p "${BUILD_DIR}/Contents/Resources"
 
-# Spotlight's four-panel UI is macOS 26+, so unlike Key54 there is no reason
-# to target anything older.
+# Info.plist's LSMinimumSystemVersion is the one place the supported macOS is set:
+# the deployment target is read from it here, and release.yml writes the same
+# value into the Homebrew cask's `depends_on macos`. Releases are Apple Silicon
+# only (Apple Intelligence is too), so the architecture is pinned rather than
+# taken from whatever Mac builds.
+MIN_MACOS="$(plutil -extract LSMinimumSystemVersion raw Info.plist)"
 # -Osize rather than -O: this app spends its life idle waiting on a hotkey, and
 # the work that isn't idle (OCR, the on-device model, speech) happens inside
 # system frameworks rather than here — so the size is worth more than the last
 # few percent of throughput. Measured on this source: 536KB at -O, 491KB here.
 swiftc -Osize main.swift \
-    -target "$(uname -m)-apple-macos26.0" \
+    -target "arm64-apple-macos${MIN_MACOS}" \
     -framework Cocoa \
     -framework Carbon \
     -framework ServiceManagement \
