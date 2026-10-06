@@ -1828,9 +1828,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `isRefusal` does not catch it. Its length test is deliberately limited to
     /// dictation, since a rewrite action is allowed to expand — translating and
     /// wrapping in HTML both do — which is exactly the licence this abuses.
-    private static func leakedScaffolding(_ output: String) -> Bool {
-        let keys = ["additionalProperties", "\"properties\"", "\"$schema\""]
-        return keys.contains { output.contains($0) }
+    ///
+    /// The keys alone missed the other way it leaks: the framework's own lead-in
+    /// to the schema. Professional on "how can i make this better" came back as
+    /// "How can I improve this? Respond using the following JSON format: {" —
+    /// cut off before any key arrived. "JSON" catches every wording of that
+    /// lead-in seen so far — a rewrite has no reason to introduce it — and
+    /// anything here that was already in the selection doesn't, since text about
+    /// JSON is allowed to stay about JSON.
+    private static func leakedScaffolding(_ output: String, for input: String) -> Bool {
+        let markers = ["additionalProperties", "\"properties\"", "\"$schema\"", "JSON"]
+        return markers.contains { output.contains($0) && !input.contains($0) }
     }
 
     /// Whether the model talked *about* the text instead of rewriting it.
@@ -1984,7 +1992,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // then translates its own output format and puts the result in
                 // the field, which is structurally valid and useless. Fall
                 // through to the prose path, which has no schema to leak.
-                if let leak = filled, Self.leakedScaffolding(leak) { filled = nil }
+                if let leak = filled, Self.leakedScaffolding(leak, for: text) { filled = nil }
                 if let filled {
                     output = filled.trimmingCharacters(in: .whitespacesAndNewlines)
                 } else {
@@ -2014,6 +2022,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // text is left alone.
             var result = output
             if let out = result, Self.isRefusal(out, for: text) { result = nil }
+            // And scaffolding again, whichever path produced it: the fallback
+            // has no schema of its own, but pasting the framework's prompt into
+            // a document is never the right answer, so it fails as "Unchanged".
+            if let out = result, Self.leakedScaffolding(out, for: text) { result = nil }
             return result?.isEmpty == false ? result : nil
         }
 
@@ -2506,6 +2518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// screen in its own process, so Pullcord needs no Screen Recording grant.
     /// A canceled selection (Esc) writes no file and is a silent no-op.
     func captureText() {
+        Self.warmTextRecognizer()
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("pullcord-ocr-\(UUID().uuidString).png")
         let task = Process()
@@ -2526,6 +2539,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try task.run()
         } catch {
             hud.showMessage("Couldn’t start capture", symbol: "exclamationmark.triangle.fill", tint: .systemRed)
+        }
+    }
+
+    /// Load the recognizer while the crosshair is still up, so the load overlaps
+    /// the drag instead of following it.
+    ///
+    /// The cost is the system's, not this app's: the first `.accurate` request
+    /// after the Mac has been idle loads the model, and measured here that took
+    /// 26s against 0.1s for every request after it — in a fresh process too, so
+    /// it is shared system-wide and evicted on the system's schedule. It is what
+    /// made the first capture of the day, or the first after a long idle, sit on
+    /// "processing". A rendered word rather than a blank image, since a blank
+    /// one can find no text and stop before the recognizer is ever reached.
+    /// Nothing is done with the result.
+    private static func warmTextRecognizer() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let size = NSSize(width: 160, height: 48)
+            let image = NSImage(size: size, flipped: false) { rect in
+                NSColor.white.setFill(); rect.fill()
+                ("Pullcord" as NSString).draw(at: NSPoint(x: 8, y: 10),
+                    withAttributes: [.font: NSFont.systemFont(ofSize: 24),
+                                     .foregroundColor: NSColor.black])
+                return true
+            }
+            guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.usesLanguageCorrection = true
+            try? VNImageRequestHandler(cgImage: cg, options: [:]).perform([request])
         }
     }
 
