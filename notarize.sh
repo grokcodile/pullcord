@@ -84,6 +84,16 @@ hdiutil create -volname "${APP_NAME}" -srcfolder "${DIST}/dmgroot" \
     -ov -fs "HFS+" -format UDZO "$DMG"
 rm -rf "${DIST}/dmgroot"
 
+# Sign the image with the certificate that signed the app, as release.yml does:
+# unsigned, a disk-image check rejects it with "no usable signature". The hash
+# is read back from the app rather than repeated here, so it can't drift.
+CERT_DIR="$(mktemp -d)"
+( cd "$CERT_DIR" && codesign -d --extract-certificates "$OLDPWD/${APP#./}" 2>/dev/null )
+SIGN_IDENTITY="$(openssl x509 -inform DER -in "$CERT_DIR/codesign0" -noout -fingerprint -sha1 | sed 's/.*=//; s/://g')"
+rm -rf "${CERT_DIR:?}"
+codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+codesign --verify --strict --verbose=2 "$DMG"
+
 # The image is notarized in its own right: stapling the app stops Gatekeeper
 # complaining about the app, stapling the image stops it complaining about the
 # image someone just downloaded.
@@ -98,6 +108,7 @@ codesign -dvv "$APP" 2>&1 | grep -E "^(Authority|TeamIdentifier|Timestamp|Identi
 xcrun stapler validate "$APP"
 xcrun stapler validate "$DMG"
 spctl --assess --type execute -vv "$APP"
+spctl --assess --type open --context context:primary-signature -vv "$DMG"
 shasum -a 256 "$DMG"
 echo
 echo "Notarized: ${DMG}"

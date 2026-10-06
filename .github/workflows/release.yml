@@ -22,12 +22,6 @@ jobs:
       HAS_SIGNING: ${{ secrets.MACOS_CERT_P12_BASE64 != '' && secrets.MACOS_CERT_PASSWORD != '' }}
       HAS_NOTARY: ${{ secrets.AC_API_KEY_ID != '' && secrets.AC_API_ISSUER_ID != '' && secrets.AC_API_KEY_BASE64 != '' }}
       HAS_TAP: ${{ secrets.TAP_PUSH_TOKEN != '' }}
-      # The certificate to sign with, by SHA-1 hash — never by name, which can
-      # match an older certificate of the same label. Keep in step with
-      # DEFAULT_SIGN_IDENTITY in build.sh. It only becomes SIGN_IDENTITY (which
-      # build.sh treats as mandatory) once the import step has found it, so a
-      # run without signing secrets still builds ad-hoc, as documented.
-      SIGN_CERT_SHA1: DEA1A3749B06CF3619F72152EFC35A48E380C4E4
     steps:
       - uses: actions/checkout@v4
 
@@ -87,6 +81,13 @@ jobs:
         env:
           MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          # Sign by SHA-1 hash, never by name — several identities can share one
+          # name, and the old `grep | head -1` took the first, which may be the
+          # older cert Apple is retiring. Exported below as an explicit
+          # SIGN_IDENTITY, so build.sh fails (not ad-hoc) if it can't use it and
+          # then proves the signer's fingerprint. Same hash as
+          # DEFAULT_SIGN_IDENTITY in build.sh.
+          SIGN_IDENTITY: DEA1A3749B06CF3619F72152EFC35A48E380C4E4
         run: |
           KEYCHAIN="$RUNNER_TEMP/app.keychain-db"
           security create-keychain -p "" "$KEYCHAIN"
@@ -96,22 +97,16 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN" >/dev/null
-          # The .p12 must hold exactly the certificate named by SIGN_CERT_SHA1. A
-          # .p12 exported before the renewal still imports cleanly, so without
-          # this check the build would only fail later, or sign with whatever
-          # else was in it.
-          security find-identity -v -p codesigning "$KEYCHAIN"
-          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -qi "$SIGN_CERT_SHA1"; then
-            # -v hides identities whose chain doesn't validate, so show those too:
-            # the new certificate chains to the Developer ID G2 CA, and a .p12
-            # without it can look "missing" when it is merely untrusted.
-            echo "--- including identities that did not validate:"
-            security find-identity -p codesigning "$KEYCHAIN"
-            echo "::error::No valid identity $SIGN_CERT_SHA1 from MACOS_CERT_P12_BASE64. Either the .p12 lacks that certificate and its private key (re-export the current Developer ID Application certificate), or it is present but its chain, the Developer ID G2 CA, is not trusted on this runner (see the unfiltered list above)."
+          # Fail the release rather than sign with whatever else the .p12 holds.
+          if ! security find-identity -v -p codesigning "$KEYCHAIN" | grep -qF "$SIGN_IDENTITY"; then
+            echo "::error::The imported .p12 has no valid signing identity with hash $SIGN_IDENTITY."
+            echo "Re-export that Developer ID Application cert and update MACOS_CERT_P12_BASE64 / MACOS_CERT_PASSWORD."
+            echo "Identities that were imported:"
+            security find-identity -v -p codesigning "$KEYCHAIN"
             exit 1
           fi
-          echo "Using certificate $SIGN_CERT_SHA1"
-          echo "SIGN_IDENTITY=$SIGN_CERT_SHA1" >> "$GITHUB_ENV"
+          echo "Using identity: $SIGN_IDENTITY"
+          echo "SIGN_IDENTITY=$SIGN_IDENTITY" >> "$GITHUB_ENV"
 
       # The git tag is the single source of truth for the version: stamp it into
       # Info.plist before building so the app version can never drift from the
@@ -160,8 +155,6 @@ jobs:
             --issuer "$AC_API_ISSUER_ID" \
             --wait
           xcrun stapler staple "build/Pullcord.app"
-          xcrun stapler validate "build/Pullcord.app"
-          spctl -a -vv "build/Pullcord.app"
 
       # A disk image with an Applications symlink, so opening it gives the
       # drag-across window people expect rather than a loose app in Downloads.
@@ -176,6 +169,16 @@ jobs:
           # published DMG was that. Same content on HFS+: 793KB → 420KB.
           hdiutil create -volname "Pullcord" -srcfolder dist/dmgroot \
             -ov -fs "HFS+" -format UDZO "dist/Pullcord.dmg"
+          # Sign the disk image itself, with the app's pinned identity, before it
+          # is notarized. Unsigned, it rests on its stapled ticket alone, and a
+          # disk-image check (spctl -t open --context context:primary-signature)
+          # rejects it with "no usable signature". Hardened runtime means nothing
+          # for a disk image, but it keeps every codesign call alike.
+          if [ -n "${SIGN_IDENTITY:-}" ]; then
+            codesign --force --options runtime --timestamp \
+              --sign "$SIGN_IDENTITY" "dist/Pullcord.dmg"
+            codesign --verify --strict --verbose=2 "dist/Pullcord.dmg"
+          fi
 
       # The DMG needs notarizing too. Stapling the app (above) is what lets a
       # copy dragged out of the image launch offline; stapling the image is what
@@ -194,8 +197,29 @@ jobs:
             --issuer "$AC_API_ISSUER_ID" \
             --wait
           xcrun stapler staple "dist/Pullcord.dmg"
-          xcrun stapler validate "dist/Pullcord.dmg"
           shasum -a 256 dist/Pullcord.dmg
+
+      # Gatekeeper's verdict, not just codesign's: before anything is published,
+      # the app and the DMG must both carry a valid stapled ticket and assess as
+      # "Notarized Developer ID". codesign alone passed an unsigned DMG for
+      # releases; this fails the run instead. (Both the exit status and the source
+      # line must agree, so a runner with assessments overridden can't pass.)
+      - name: Gatekeeper check
+        if: env.HAS_NOTARY == 'true'
+        run: |
+          xcrun stapler validate "build/Pullcord.app"
+          xcrun stapler validate "dist/Pullcord.dmg"
+          assess() {  # <label> <spctl args…>
+            local label="$1" out status=0; shift
+            out="$(spctl --assess -v "$@" 2>&1)" || status=$?
+            echo "$out"
+            if [ "$status" -ne 0 ] || ! grep -q "source=Notarized Developer ID" <<<"$out"; then
+              echo "::error::Gatekeeper does not accept $label as Notarized Developer ID."
+              exit 1
+            fi
+          }
+          assess "the app" --type execute "build/Pullcord.app"
+          assess "the DMG" --type open --context context:primary-signature "dist/Pullcord.dmg"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

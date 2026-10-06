@@ -145,7 +145,7 @@ That's the same App Store Connect API key CI uses, so local and CI authenticate 
 
 **The profile is named for the team, not the app.** The credential is an App Store Connect key for the whole account, so every app here shares this one profile; naming it after an app is how its predecessor ended up called `liteswitch` and went stale on a rename. `NOTARY_PROFILE` overrides it if you need a different one.
 
-After that, `notarize.sh` builds, submits, waits for Apple, staples the ticket into the bundle, builds a disk image, notarizes that too, and leaves `dist/Pullcord.dmg`.
+After that, `notarize.sh` builds, submits, waits for Apple, staples the ticket into the bundle, builds a disk image, signs it with the same certificate, notarizes that too, and leaves `dist/Pullcord.dmg`.
 
 ### Cutting a release
 
@@ -155,7 +155,7 @@ Releases are built by GitHub Actions ([`.github/workflows/release.yml`](.github/
 git tag v0.3 && git push origin v0.3
 ```
 
-That runs on a `macos-26` runner and, in order: imports the Developer ID certificate, stamps the version from the tag into `Info.plist`, builds, checks the binary really is arm64, notarizes and staples the app, builds and notarizes a disk image, publishes a GitHub Release with generated notes, and bumps `version` and `sha256` in the Homebrew cask so `brew upgrade --cask pullcord` picks it up.
+That runs on a `macos-26` runner and, in order: imports the Developer ID certificate, stamps the version from the tag into `Info.plist`, builds, checks the binary really is arm64, notarizes and staples the app, builds, signs and notarizes a disk image, checks that Gatekeeper accepts both as Notarized Developer ID, publishes a GitHub Release with generated notes, and bumps `version` and `sha256` in the Homebrew cask so `brew upgrade --cask pullcord` picks it up.
 
 **The tag is the version.** `Info.plist` is stamped from the tag during the build, so the tag and the shipped app can never disagree. (Release commits bump it too — `Pullcord 1.30` — which is what a local `notarize.sh` build reads.) Running the workflow manually (`workflow_dispatch`) from `main` builds and notarizes without publishing, and leaves the disk image as an artifact — useful for checking a build before tagging. Run it from a branch, not a tag: from a tag ref it publishes.
 
@@ -163,24 +163,17 @@ It needs six repository secrets. On a manual run, a step whose secrets are absen
 
 | Secret | What it is |
 | --- | --- |
-| `MACOS_CERT_P12_BASE64` | the Developer ID identity whose hash is `SIGN_CERT_SHA1` in the workflow, plus its intermediate, as a base64 `.p12` — set by `update-ci-cert.sh` |
-| `MACOS_CERT_PASSWORD` | the random password that `.p12` is wrapped in — also set by `update-ci-cert.sh`; nobody needs to know it |
+| `MACOS_CERT_P12_BASE64` | Base64 of your exported **Developer ID Application** cert and private key (`.p12`). It must contain the identity whose SHA-1 is pinned in `release.yml` (and `build.sh`) — the release fails otherwise. Export that specific cert: a keychain can hold several with the same name |
+| `MACOS_CERT_PASSWORD` | Password for that `.p12` |
 | `AC_API_KEY_ID` | App Store Connect API key ID |
 | `AC_API_ISSUER_ID` | App Store Connect issuer ID |
 | `AC_API_KEY_BASE64` | the `.p8` API key file, base64-encoded |
 | `TAP_PUSH_TOKEN` | a token with `contents:write` on `grokcodile/homebrew-tap` |
 
-**Renewing the Developer ID certificate.** Three values name it, and change together: `DEFAULT_SIGN_IDENTITY` in `build.sh` and `SIGN_CERT_SHA1` in `release.yml` become the new hash, and `RETIRED_SIGN_IDENTITY` in `build.sh` becomes the one being replaced. Commit and push those first, then export the new certificate from Keychain Access and run:
-
-```sh
-./update-ci-cert.sh Certificates.p12
-```
-
-It asks for the `.p12`'s password and sends only the identity named by that hash, plus its intermediate, re-wrapped under a random password — so an export that also carries the old certificate is harmless. Then it runs the workflow once from `main` as a dry run that publishes nothing. It refuses to start if `main` on GitHub still names a different certificate, since that dry run would fail. Delete the exported `.p12` afterwards.
-
 Notarization uses an App Store Connect API key rather than an Apple ID and app-specific password: it's the non-interactive path, it doesn't put an account password in CI, and it's revocable on its own without touching the Apple ID. It's the same key as the local `grokcodile` profile above — one credential to rotate, not two.
 
 ```sh
+base64 -i Certificates.p12 | gh secret set MACOS_CERT_P12_BASE64
 base64 -i AuthKey_XXXXXXXX.p8 | gh secret set AC_API_KEY_BASE64
 ```
 
